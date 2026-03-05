@@ -1,365 +1,314 @@
-# Observe the interaction of the system components
+# Build the Data Pipeline
 
 <h4>Time</h4>
 
-~25 min
+~75 min
 
 <h4>Purpose</h4>
 
-Trace a request from [`Swagger UI`](../../../wiki/swagger.md#what-is-swagger-ui) through the [API](../../../wiki/api.md#what-is-an-api) to the [database](../../../wiki/database.md#what-is-a-database) using the [browser developer tools](../../../wiki/browser-developer-tools.md#what-are-browser-developer-tools) and [`pgAdmin`](../../../wiki/pgadmin.md#what-is-pgadmin).
+Build an ETL pipeline that fetches data from an external API and loads it into the database, handling pagination, incremental sync, and idempotent upserts.
 
 <h4>Context</h4>
 
-Before adding new features, you will deploy the system to your VM and confirm it works.
-Then you will send requests and observe how data flows through the components: browser → API → database.
+The database starts empty. The autochecker dashboard API provides anonymized check results for all students across all labs. Your job is to build a pipeline that fetches this data and populates the local database so the system can serve it through existing endpoints and power analytics in the next task.
 
-<h4>Diagram</h4>
-
-```mermaid
-sequenceDiagram
-    actor Developer
-    participant Browser as "Browser (Swagger UI)"
-    participant Caddy as "Caddy<br/>(Reverse Proxy)"
-    participant API as "FastAPI<br/>(API Server)"
-    participant DB as "PostgreSQL<br/>(Database)"
-    participant pgAdmin as "pgAdmin<br/>(DB UI)"
-
-    Note over Developer,pgAdmin: Task Flow: POST /learners/ → Verify in Database
-
-    Developer->>Browser: Open Swagger UI<br/>http://<your-vm-ip-address>:<caddy-port>/docs
-    Browser->>Caddy: GET /docs
-    Caddy-->>Browser: Swagger UI HTML/JS
-
-    Note over Developer,Browser: Authorize with API_KEY
-
-    Developer->>Browser: POST /learners/<br/>{name: "John Doe", email: "john-doe@email.com"}
-    Browser->>Caddy: POST /learners/<br/>Authorization: Bearer API_KEY
-    Caddy->>API: Proxy POST /learners/
-
-    API->>API: verify_api_key()
-    API->>API: Validate request body<br/>(LearnerCreate)
-    API->>DB: INSERT INTO learner<br/>(name, email)<br/>RETURNING *
-
-    DB-->>API: New row:<br/>{id: 6, name: "John Doe",<br/>email: "john-doe@email.com",<br/>enrolled_at: ...}
-
-    API-->>Caddy: 201 Created<br/>JSON response
-    Caddy-->>Browser: 201 Created
-    Browser-->>Developer: Display response
-
-    Note over Developer,pgAdmin: Verification Flow: Check database in pgAdmin
-
-    Developer->>pgAdmin: Open pgAdmin<br/>http://<your-vm-ip-address>:<pgadmin-port>
-    Developer->>pgAdmin: Run SQL query:<br/>SELECT * FROM learner<br/>ORDER BY id DESC LIMIT 5
-    pgAdmin->>DB: Execute SQL query
-    DB-->>pgAdmin: Return rows of 'learner'
-    pgAdmin-->>Developer: Display data output<br/>(CSV format)
-
-    Note right of Developer: Verify: New row matches<br/>the Swagger UI response
-```
-
-See:
-
-- [`<your-vm-ip-address>`](../../../wiki/vm.md#your-vm-ip-address)
-- [`<caddy-port>`](../../../wiki/caddy.md#caddy-port)
-- [`<pgadmin-port>`](../../../wiki/pgadmin.md#pgadmin-port)
+The code stubs in [`backend/app/etl.py`](../../../backend/app/etl.py) contain detailed TODOs. You will use an AI coding agent to implement the pipeline functions.
 
 <h4>Table of contents</h4>
 
 - [1. Steps](#1-steps)
-  - [1.1. Create a `Lab Task` issue](#11-create-a-lab-task-issue)
-  - [1.2. Deploy the back-end to the VM](#12-deploy-the-back-end-to-the-vm)
-    - [1.2.1. Connect and get the code](#121-connect-and-get-the-code)
-    - [1.2.2. Prepare the environment](#122-prepare-the-environment)
-    - [1.2.3. Start the services](#123-start-the-services)
-  - [1.3. Open `Swagger UI`](#13-open-swagger-ui)
-  - [1.4. Open the browser developer tools](#14-open-the-browser-developer-tools)
-  - [1.5. Send a request using `Swagger UI`](#15-send-a-request-using-swagger-ui)
-  - [1.6. Inspect the request using browser developer tools](#16-inspect-the-request-using-browser-developer-tools)
-  - [1.7. Verify in `pgAdmin`](#17-verify-in-pgadmin)
-  - [1.8. Send another request and check the database](#18-send-another-request-and-check-the-database)
-  - [1.9. Write comments for the issue](#19-write-comments-for-the-issue)
-    - [1.9.1. Comment 1: write the request as `fetch` code](#191-comment-1-write-the-request-as-fetch-code)
-    - [1.9.2. Comment 2: write the response](#192-comment-2-write-the-response)
-    - [1.9.3. Comment 3: attach the file with the data output from `pgAdmin`](#193-comment-3-attach-the-file-with-the-data-output-from-pgadmin)
-    - [1.9.4. Comment 4: paste the ERD from `pgAdmin`](#194-comment-4-paste-the-erd-from-pgadmin)
-  - [1.10. Close the issue](#110-close-the-issue)
-  - [1.11. Check the task using the autochecker](#111-check-the-task-using-the-autochecker)
+  - [1.1. Follow the `Git workflow`](#11-follow-the-git-workflow)
+  - [1.2. Create a `Lab Task` issue](#12-create-a-lab-task-issue)
+  - [1.3. Part A: Explore the API](#13-part-a-explore-the-api)
+    - [1.3.1. Fetch the item catalog](#131-fetch-the-item-catalog)
+    - [1.3.2. Fetch check logs](#132-fetch-check-logs)
+    - [1.3.3. Test incremental sync](#133-test-incremental-sync)
+  - [1.4. Part B: Build the pipeline](#14-part-b-build-the-pipeline)
+    - [1.4.1. Read the code stubs](#141-read-the-code-stubs)
+    - [1.4.2. Implement the pipeline](#142-implement-the-pipeline)
+    - [1.4.3. Deploy and test](#143-deploy-and-test)
+    - [1.4.4. Verify the data](#144-verify-the-data)
+    - [1.4.5. Test idempotency](#145-test-idempotency)
+    - [1.4.6. Commit your work](#146-commit-your-work)
+  - [1.5. Finish the task](#15-finish-the-task)
 - [2. Acceptance criteria](#2-acceptance-criteria)
 
 ## 1. Steps
 
-### 1.1. Create a `Lab Task` issue
+### 1.1. Follow the `Git workflow`
 
-Title: `[Task] Observe System Component Interaction`
+Follow the [`Git workflow`](../../../wiki/git-workflow.md) to complete this task.
 
-### 1.2. Deploy the back-end to the VM
+### 1.2. Create a `Lab Task` issue
+
+Title: `[Task] Build the Data Pipeline`
+
+### 1.3. Part A: Explore the API
 
 <!-- no toc -->
-- [1.2.1. Connect and get the code](#121-connect-and-get-the-code)
-- [1.2.2. Prepare the environment](#122-prepare-the-environment)
-- [1.2.3. Start the services](#123-start-the-services)
+- [1.3.1. Fetch the item catalog](#131-fetch-the-item-catalog)
+- [1.3.2. Fetch check logs](#132-fetch-check-logs)
+- [1.3.3. Test incremental sync](#133-test-incremental-sync)
 
-#### 1.2.1. Connect and get the code
+> [!NOTE]
+> Before writing code, explore the autochecker API with `curl` to understand the data format.
+> The API uses HTTP Basic Auth — your email as the username and `<your-github-username><your-telegram-alias>` as the password.
 
-1. [Connect to your VM](../../../wiki/vm.md#connect-to-the-vm).
-2. To clone your fork on the VM (skip this step if already cloned),
+#### 1.3.1. Fetch the item catalog
+
+1. To fetch the lab/task catalog,
 
    [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
 
    ```terminal
-   git clone <your-fork-url> se-toolkit-lab-4
+   curl -u <your-email>@innopolis.university:<your-password> https://auche.namaz.live/api/items
    ```
 
-   Replace [`<your-fork-url>`](../../../wiki/github.md#your-fork-url).
+   Replace `<your-email>` and `<your-password>` with your autochecker credentials (same as in [setup step 1.4.3](../setup.md#143-configure-the-autochecker-api-credentials)).
 
-3. To navigate to the project directory,
+   You should see a JSON array of lab and task objects:
 
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
-
-   ```terminal
-   cd se-toolkit-lab-4
+   ```json
+   [
+     {"lab": "lab-01", "task": null, "title": "Lab 01 – ...", "type": "lab"},
+     {"lab": "lab-01", "task": "setup", "title": "Repository Setup", "type": "task"},
+     ...
+   ]
    ```
 
-4. To pull the changes from your fork,
+   > [!NOTE]
+   > Items with `"type": "lab"` are labs. Items with `"type": "task"` have a non-null `task` field and belong to the lab specified in the `lab` field.
+
+#### 1.3.2. Fetch check logs
+
+1. To fetch the first 5 check logs,
 
    [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
 
    ```terminal
-   git pull
+   curl -u <your-email>@innopolis.university:<your-password> "https://auche.namaz.live/api/logs?limit=5"
    ```
 
-#### 1.2.2. Prepare the environment
+   You should see a JSON object with a `logs` array:
 
-1. [Clean up `Docker`](../../../wiki/docker.md#clean-up-docker).
-
-2. To create the [`.env.docker.secret`](../../../wiki/dotenv-docker-secret.md#what-is-envdockersecret) file (if it does not exist),
-
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
-
-   ```terminal
-   cp .env.docker.example .env.docker.secret
+   ```json
+   {
+     "logs": [
+       {
+         "id": 1,
+         "student_id": "a1b2c3d4",
+         "group": "B23-CS-01",
+         "lab": "lab-01",
+         "task": "setup",
+         "score": 100.0,
+         "passed": 4,
+         "failed": 0,
+         "total": 4,
+         "checks": [...],
+         "submitted_at": "2026-02-01T14:30:00Z"
+       }
+     ],
+     "count": 5,
+     "has_more": true
+   }
    ```
 
-#### 1.2.3. Start the services
+   > [!NOTE]
+   > - `student_id` is an anonymized identifier (not a real student ID).
+   > - `has_more: true` means there are more records — you need to paginate.
+   > - `score` is a percentage (0.0–100.0).
+   > - `passed`, `failed`, and `total` are the number of individual checks.
 
-1. To start the services in [background](../../../wiki/operating-system.md#background-process),
+#### 1.3.3. Test incremental sync
+
+1. To fetch only recent logs,
 
    [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
 
    ```terminal
+   curl -u <your-email>@innopolis.university:<your-password> "https://auche.namaz.live/api/logs?since=2026-03-01T00:00:00Z&limit=5"
+   ```
+
+   You should see only logs submitted after March 1st 2026.
+
+   > [!NOTE]
+   > The `since` parameter enables incremental sync — you only fetch new data each time.
+   > Your pipeline will use the most recent `submitted_at` from the database as the `since` value.
+
+### 1.4. Part B: Build the pipeline
+
+<!-- no toc -->
+- [1.4.1. Read the code stubs](#141-read-the-code-stubs)
+- [1.4.2. Implement the pipeline](#142-implement-the-pipeline)
+- [1.4.3. Deploy and test](#143-deploy-and-test)
+- [1.4.4. Verify the data](#144-verify-the-data)
+- [1.4.5. Test idempotency](#145-test-idempotency)
+- [1.4.6. Commit your work](#146-commit-your-work)
+
+#### 1.4.1. Read the code stubs
+
+1. [Open the file](../../../wiki/vs-code.md#open-the-file):
+   [`backend/app/etl.py`](../../../backend/app/etl.py).
+
+   This file contains five functions with detailed TODO comments:
+
+   | Function | Role |
+   |----------|------|
+   | `fetch_items()` | Fetch the lab/task catalog from the API |
+   | `fetch_logs()` | Fetch check logs with pagination |
+   | `load_items()` | Insert items into the database |
+   | `load_logs()` | Insert logs (with learner creation) into the database |
+   | `sync()` | Orchestrate the full pipeline |
+
+2. [Open the file](../../../wiki/vs-code.md#open-the-file):
+   [`backend/app/routers/pipeline.py`](../../../backend/app/routers/pipeline.py).
+
+   This file provides the `POST /pipeline/sync` endpoint that calls `sync()`.
+
+3. Read the TODO comments in `etl.py` carefully. They specify:
+
+   - Which API endpoints to call and how to authenticate.
+   - How to handle pagination (`has_more` flag).
+   - How to match API data to database models.
+   - How to ensure idempotent upserts (skip records that already exist).
+
+#### 1.4.2. Implement the pipeline
+
+1. Open the [coding agent](../../../wiki/coding-agents.md#what-is-a-coding-agent) in the project directory.
+2. Give it a prompt like:
+
+   > "Read the TODO comments in `backend/app/etl.py` and implement all five functions. Use the existing models in `backend/app/models/` and the settings in `backend/app/settings.py`. The API uses HTTP Basic Auth."
+
+3. Wait for the agent to generate the implementation.
+
+4. Review the generated code. Make sure it:
+
+   - Uses `httpx.AsyncClient` with HTTP Basic Auth for API calls.
+   - Handles pagination in `fetch_logs()` (loops while `has_more` is True).
+   - Creates learners by `external_id` in `load_logs()` (find-or-create pattern).
+   - Uses `external_id` on `InteractionLog` for idempotent upserts (skip if exists).
+   - Returns `{"new_records": N, "total_records": M}` from `sync()`.
+
+> [!TIP]
+> If you prefer to implement the functions manually, the TODO comments in `etl.py` describe each function step by step.
+
+#### 1.4.3. Deploy and test
+
+1. Push your changes and deploy to the VM.
+
+   On your VM:
+
+   ```terminal
+   cd se-toolkit-lab-5
+   git fetch origin && git checkout <task-branch> && git pull
    docker compose --env-file .env.docker.secret up --build -d
    ```
 
-2. To check that the containers are running,
+   Replace [`<task-branch>`](../../../wiki/git-workflow.md#task-branch).
 
-   [run in the `VS Code Terminal`](../../../wiki/vs-code.md#run-a-command-in-the-vs-code-terminal):
+2. Open [`Swagger UI`](../../../wiki/swagger.md#what-is-swagger-ui) at `http://<your-vm-ip-address>:<caddy-port>/docs`.
 
-   ```terminal
-   docker compose --env-file .env.docker.secret ps --format "table {{.Service}}\t{{.Status}}"
-   ```
-
-   You should see all four services running with the status `Up`:
-
-   ```terminal
-   SERVICE    STATUS
-   app        Up 50 seconds
-   caddy      Up 49 seconds
-   pgadmin    Up 50 seconds
-   postgres   Up 55 seconds (healthy)
-   ```
-
-   <details><summary>Troubleshooting</summary>
-
-   <h4>Port conflict (<code>port is already allocated</code>)</h4>
-
-   [Clean up `Docker`](../../../wiki/docker.md#clean-up-docker), then run the `docker compose up` command again.
-
-   <h4>Containers exit immediately</h4>
-
-   1. [Stop and remove all containers and volumes](../../../wiki/docker-compose.md#stop-and-remove-all-containers-and-volumes).
-   2. [Start the services again](#123-start-the-services).
-
-   </details>
-
-### 1.3. Open `Swagger UI`
-
-1. Open in a browser: `http://<your-vm-ip-address>:<caddy-port>/docs`. Replace:
+   Replace:
 
    - [`<your-vm-ip-address>`](../../../wiki/vm.md#your-vm-ip-address)
    - [`<caddy-port>`](../../../wiki/caddy.md#caddy-port)
 
-2. [Authorize](../../../wiki/swagger.md#authorize-in-swagger-ui) with [`API_KEY`](../../../wiki/dotenv-docker-secret.md#api_key) from [`.env.docker.secret`](../../../wiki/dotenv-docker-secret.md#what-is-envdockersecret).
+3. [Authorize](../../../wiki/swagger.md#authorize-in-swagger-ui) with your [`API_KEY`](../../../wiki/dotenv-docker-secret.md#api_key).
 
-   You should see the [`Swagger UI`](../../../wiki/swagger.md#swagger-ui) page with the [API](../../../wiki/api.md#what-is-an-api) documentation and available [endpoints](../../../wiki/api.md#endpoint).
+4. Trigger the pipeline: expand `POST /pipeline/sync`, click `Try it out`, then `Execute`.
 
-   <details><summary>Troubleshooting</summary>
-
-   <h4>Page does not load</h4>
-
-   Verify that all [`Docker` containers](../../../wiki/docker.md#container) are running (see [1.2.3. Start the services](#123-start-the-services)).
-
-   <h4>Authorization fails</h4>
-
-   Check that the [`API_KEY`](../../../wiki/dotenv-docker-secret.md#api_key) value in [`.env.docker.secret`](../../../wiki/dotenv-docker-secret.md#what-is-envdockersecret) matches the one you entered in `Swagger UI`.
-
-   </details>
-
-### 1.4. Open the browser developer tools
-
-> [!NOTE]
-> See [What are browser developer tools](../../../wiki/browser-developer-tools.md#what-are-browser-developer-tools).
-
-1. [Open the `Network` tab](../../../wiki/browser-developer-tools.md#open-the-network-tab).
-
-### 1.5. Send a request using `Swagger UI`
-
-1. In [`Swagger UI`](../../../wiki/swagger.md#what-is-swagger-ui), expand the `POST /learners/` endpoint.
-2. Click `Try it out`.
-3. Enter a [request payload](../../../wiki/http.md#http-request-payload) in [`JSON`](../../../wiki/file-formats.md#json) format, for example:
+   You should see a `200` response with a JSON body:
 
    ```json
    {
-     "name": "John Doe",
-     "email": "john-doe@email.com"
+     "new_records": 150,
+     "total_records": 150
    }
    ```
 
-4. Click `Execute`.
+   The exact numbers depend on how many check results exist in the autochecker.
 
-   In `Server response`, you should see:
-   - `Code`: 201
-   - `Details` -> `Response body`:
+   <details><summary>Troubleshooting</summary>
 
-     ```json
-     {
-       "email": "john-doe@email.com",
-       "id": 6,
-       "enrolled_at": "2026-03-02 17:46:34.261004",
-       "name": "John Doe"
-     }
-     ```
+   <h4>401 Unauthorized from the autochecker API</h4>
 
-### 1.6. Inspect the request using browser developer tools
+   Check that `AUTOCHECKER_EMAIL` and `AUTOCHECKER_PASSWORD` are set correctly in `.env.docker.secret`. The password is `<your-github-username><your-telegram-alias>` (no spaces, no `@`).
 
-1. [Inspect the request to `/learners`](../../../wiki/browser-developer-tools.md#inspect-a-request).
+   <h4>500 Internal Server Error</h4>
 
-   **Note:** you've already completed the initial steps.
+   Check the container logs for the error:
 
-   You should see headers, payload, response.
+   ```terminal
+   docker compose --env-file .env.docker.secret logs app --tail 50
+   ```
 
-### 1.7. Verify in `pgAdmin`
+   Common issues: missing import, wrong field name, database constraint violation.
+
+   <h4>Connection refused to the autochecker API</h4>
+
+   Verify that `AUTOCHECKER_API_URL` is set to `https://auche.namaz.live` in `.env.docker.secret`.
+
+   </details>
+
+#### 1.4.4. Verify the data
+
+1. In `Swagger UI`, try `GET /items/`.
+
+   You should see a list of lab and task items created by the pipeline.
+
+2. Try `GET /learners/`.
+
+   You should see a list of learners with anonymized `external_id` values and student groups.
+
+3. Try `GET /interactions/`.
+
+   You should see interaction records with `score`, `checks_passed`, and `checks_total` fields.
+
+4. (Optional) Open [`pgAdmin`](../../../wiki/pgadmin.md#what-is-pgadmin) and inspect the tables directly.
+
+#### 1.4.5. Test idempotency
+
+1. In `Swagger UI`, run `POST /pipeline/sync` again.
+
+   You should see:
+
+   ```json
+   {
+     "new_records": 0,
+     "total_records": 150
+   }
+   ```
+
+   `new_records: 0` confirms that the pipeline does not create duplicate records.
 
 > [!NOTE]
-> The [API](../../../wiki/api.md#what-is-an-api) transformed the [`JSON`](../../../wiki/file-formats.md#json) from your request into a row in the `learner` table.
+> Idempotent upserts are important for production pipelines.
+> If the pipeline is interrupted, you can safely re-run it without creating duplicates.
 
-1. [Open `pgAdmin`](../../../wiki/pgadmin.md#open-pgadmin).
-2. [Run a query](../../../wiki/pgadmin.md#run-the-query) on the `learner` table:
+#### 1.4.6. Commit your work
 
-   ```sql
-   SELECT * FROM learner ORDER BY id DESC LIMIT 5;
+1. [Commit](../../../wiki/git-workflow.md#commit) your changes.
+
+   Use this commit message:
+
+   ```text
+   feat: implement ETL pipeline for autochecker data
    ```
 
-3. Verify that the data that you sent via [`Swagger UI`](../../../wiki/swagger.md#what-is-swagger-ui) appears as a row in the `Data Output` tab.
+### 1.5. Finish the task
 
-### 1.8. Send another request and check the database
-
-1. In [`Swagger UI`](../../../wiki/swagger.md#what-is-swagger-ui), send another `POST /learners/` request with different values.
-2. In [`pgAdmin`](../../../wiki/pgadmin.md#what-is-pgadmin), run the query again.
-3. Verify the new row appears.
-4. Try changing only the `"name"` or only the `"email"`. What happens then?
-
-### 1.9. Write comments for the issue
-
-> [!NOTE]
-> Select the last successful `POST /learners/` request.
-
-<!-- no toc -->
-- [Comment 1: write the request as `fetch` code](#191-comment-1-write-the-request-as-fetch-code)
-- [Comment 2: write the response](#192-comment-2-write-the-response)
-- [Comment 3: attach the file with the data output from `pgAdmin`](#193-comment-3-attach-the-file-with-the-data-output-from-pgadmin)
-- [Comment 4: paste the ERD from `pgAdmin`](#194-comment-4-paste-the-erd-from-pgadmin)
-
-#### 1.9.1. Comment 1: write the request as `fetch` code
-
-1. [Copy the selected request as `fetch` code](../../../wiki/browser-developer-tools.md#copy-the-request-as-fetch-code).
-2. Paste this [`JavaScript`](../../../wiki/programming-language.md#javascript) code in a [`Markdown` code block](../../../wiki/file-formats.md#markdown-code-block).
-
-   Format of the block (see in [`Markdown` preview](../../../wiki/vs-code.md#open-the-markdown-preview) if you read in `VS Code`):
-
-   ~~~
-   ```js
-   <fetch-code>
-   ```
-   ~~~
-
-   Example:
-
-   ~~~
-   ```js
-   fetch("http://192.0.2.1:42002/learners/", {
-      "headers": {
-         "accept": "application/json",
-   ...
-   ```
-   ~~~
-
-#### 1.9.2. Comment 2: write the response
-
-1. [Copy the response](../../../wiki/browser-developer-tools.md#copy-the-response) to the selected request.
-2. Paste the response as [`JSON`](../../../wiki/file-formats.md#json) in a [`Markdown` code block](../../../wiki/file-formats.md#markdown-code-block).
-
-   Format of the block (see in [`Markdown` preview](../../../wiki/vs-code.md#open-the-markdown-preview) if you read in `VS Code`):
-
-   ~~~
-   ```json
-   <response>
-   ```
-   ~~~
-
-   Example:
-
-   ~~~
-   ```json
-   {"id":6,"name":"John Doe","email":"john-doe@email.com","enrolled_at":"2026-03-02 17:46:34.261004"}
-   ```
-   ~~~
-
-#### 1.9.3. Comment 3: attach the file with the data output from `pgAdmin`
-
-1. [Save to a file the data output](../../../wiki/pgadmin.md#save-to-file-the-query-data-output) that you got when verifying in the [`pgAdmin`](../../../wiki/pgadmin.md#what-is-pgadmin) that a new row appeared.
-
-   Example of the content in that file:
-
-   ```csv
-   "id","name","email","enrolled_at"
-   6,"John Doe","john-doe@email.com","2026-03-02 17:46:34.261004"
-   5,"Eve Adams","eve@example.com","2025-10-15 11:00:00"
-   ...
-   ```
-
-2. Attach the file in the comment.
-
-#### 1.9.4. Comment 4: paste the ERD from `pgAdmin`
-
-1. [View the ERD in Chen notation](../../../wiki/pgadmin.md#view-the-erd-in-chen-notation).
-2. Make a screenshot where all three tables are fully visible.
-3. Paste the screenshot.
-
-### 1.10. Close the issue
-
-Close the issue.
-
-### 1.11. Check the task using the autochecker
-
-[Check the task using the autochecker `Telegram` bot](../../../wiki/autochecker.md#check-the-task-using-the-autochecker-bot).
+1. [Create a PR](../../../wiki/git-workflow.md#create-a-pr-to-the-main-branch-in-your-fork) with your changes.
+2. [Get a PR review](../../../wiki/git-workflow.md#get-a-pr-review) and complete the subsequent steps in the `Git workflow`.
 
 ---
 
 ## 2. Acceptance criteria
 
 - [ ] Issue has the correct title.
-- [ ] Comment 1 includes the request as `fetch` code.
-- [ ] Comment 2 includes the response as `JSON` code.
-- [ ] Comment 3 includes a `CSV` table with tabs as separators.
-- [ ] Comment 4 includes a screenshot of the ERD.
-- [ ] Issue is closed.
+- [ ] `POST /pipeline/sync` returns `200` with a JSON body containing `new_records` and `total_records`.
+- [ ] `GET /items/` returns items created by the pipeline (labs and tasks).
+- [ ] `GET /learners/` returns learners created by the pipeline.
+- [ ] `GET /interactions/` returns interactions with scores.
+- [ ] Running `POST /pipeline/sync` a second time returns `new_records: 0` (idempotency).
+- [ ] PR is approved.
+- [ ] PR is merged.
