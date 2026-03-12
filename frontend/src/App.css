@@ -59,3 +59,33 @@ tr:nth-child(even) {
   padding: 0.25rem 0.75rem;
   font-size: 0.85rem;
 }
+
+.nav-menu {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.nav-btn {
+  padding: 8px 16px;
+  border: 1px solid #ddd;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.nav-btn:hover {
+  background: #f0f0f0;
+}
+
+.nav-btn.active {
+  background: #007bff;
+  color: white;
+  border-color: #0056b3;
+}
+
+.nav-btn.active:hover {
+  background: #0056b3;
+}
