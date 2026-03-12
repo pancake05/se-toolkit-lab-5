@@ -9,16 +9,15 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select, func
 from sqlalchemy import case, Date
-from datetime import date
 from typing import List, Dict, Any
+from datetime import datetime
 
 from app.database import get_session
 from app.models.item import ItemRecord
 from app.models.interaction import InteractionLog
 from app.models.learner import Learner
-from app.auth import verify_api_key  # Функция проверки API ключа
 
-router = APIRouter(dependencies=[Depends(verify_api_key)])  # Защищаем все эндпоинты
+router = APIRouter()
 
 
 @router.get("/scores")
@@ -31,34 +30,33 @@ async def get_scores(
     Returns buckets: 0-25, 26-50, 51-75, 76-100 with counts.
     """
     # 1. Находим лабораторную работу по title
-    # Предполагаем, что в БД title хранится как "Lab 04" для lab-04
-    lab_title = lab.replace("-", " ")  # "lab-04" -> "lab 04"
-    lab_title = lab_title.replace("lab", "Lab")  # "lab 04" -> "Lab 04"
+    lab_num = lab.split('-')[-1]
+    lab_title_pattern = f"Lab {lab_num}"
     
     statement = select(ItemRecord).where(
         ItemRecord.type == "lab",
-        ItemRecord.title.contains(lab_title)
+        ItemRecord.title.contains(lab_title_pattern)
     )
     result = await session.execute(statement)
     lab_item = result.scalar_one_or_none()
     
     if not lab_item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Lab {lab} not found"
-        )
+        return [
+            {"bucket": "0-25", "count": 0},
+            {"bucket": "26-50", "count": 0},
+            {"bucket": "51-75", "count": 0},
+            {"bucket": "76-100", "count": 0}
+        ]
     
     # 2. Находим все задания этой лабораторной
-    statement = select(ItemRecord).where(
+    statement = select(ItemRecord.id).where(
         ItemRecord.type == "task",
         ItemRecord.parent_id == lab_item.id
     )
     result = await session.execute(statement)
-    tasks = result.scalars().all()
-    task_ids = [task.id for task in tasks]
+    task_ids = result.scalars().all()
     
     if not task_ids:
-        # Если нет заданий, возвращаем пустые бакеты
         return [
             {"bucket": "0-25", "count": 0},
             {"bucket": "26-50", "count": 0},
@@ -67,29 +65,28 @@ async def get_scores(
         ]
     
     # 3. Группируем оценки по бакетам
-    # Используем CASE WHEN для создания бакетов
-    buckets = [
-        case(
-            (InteractionLog.score <= 25, "0-25"),
-            (InteractionLog.score <= 50, "26-50"),
-            (InteractionLog.score <= 75, "51-75"),
-            else_="76-100"
-        ).label("bucket"),
-        func.count().label("count")
-    ]
+    bucket_case = case(
+        (InteractionLog.score <= 25, "0-25"),
+        (InteractionLog.score <= 50, "26-50"),
+        (InteractionLog.score <= 75, "51-75"),
+        else_="76-100"
+    ).label("bucket")
     
-    statement = select(*buckets).where(
+    statement = select(
+        bucket_case,
+        func.count().label("count")
+    ).where(
         InteractionLog.item_id.in_(task_ids),
-        InteractionLog.score.isnot(None)  # Только взаимодействия с оценкой
-    ).group_by("bucket")
+        InteractionLog.score.isnot(None)
+    ).group_by(
+        "bucket"
+    )
     
     result = await session.execute(statement)
     rows = result.all()
     
-    # 4. Преобразуем в словарь для удобства
     counts_by_bucket = {row.bucket: row.count for row in rows}
     
-    # 5. Всегда возвращаем все 4 бакета (даже с 0)
     return [
         {"bucket": "0-25", "count": counts_by_bucket.get("0-25", 0)},
         {"bucket": "26-50", "count": counts_by_bucket.get("26-50", 0)},
@@ -104,30 +101,26 @@ async def get_pass_rates(
     session: AsyncSession = Depends(get_session),
 ) -> List[Dict[str, Any]]:
     """Per-task pass rates for a given lab."""
-    # 1. Находим лабораторную работу
-    lab_title = lab.replace("-", " ").replace("lab", "Lab")
+    lab_num = lab.split('-')[-1]
+    lab_title_pattern = f"Lab {lab_num}"
     
     statement = select(ItemRecord).where(
         ItemRecord.type == "lab",
-        ItemRecord.title.contains(lab_title)
+        ItemRecord.title.contains(lab_title_pattern)
     )
     result = await session.execute(statement)
     lab_item = result.scalar_one_or_none()
     
     if not lab_item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Lab {lab} not found"
-        )
+        return []
     
-    # 2. Находим все задания и их статистику
-    # Используем JOIN для получения данных за один запрос
     statement = select(
         ItemRecord.title.label("task"),
-        func.round(func.avg(InteractionLog.score), 1).label("avg_score"),
+        func.coalesce(func.round(func.avg(InteractionLog.score), 1), 0.0).label("avg_score"),
         func.count(InteractionLog.id).label("attempts")
-    ).join(
-        InteractionLog, InteractionLog.item_id == ItemRecord.id, isouter=True
+    ).outerjoin(
+        InteractionLog, 
+        (InteractionLog.item_id == ItemRecord.id) & (InteractionLog.score.isnot(None))
     ).where(
         ItemRecord.parent_id == lab_item.id,
         ItemRecord.type == "task"
@@ -140,11 +133,10 @@ async def get_pass_rates(
     result = await session.execute(statement)
     rows = result.all()
     
-    # 3. Форматируем результат
     return [
         {
             "task": row.task,
-            "avg_score": float(row.avg_score) if row.avg_score else 0.0,
+            "avg_score": float(row.avg_score),
             "attempts": row.attempts
         }
         for row in rows
@@ -157,23 +149,19 @@ async def get_timeline(
     session: AsyncSession = Depends(get_session),
 ) -> List[Dict[str, Any]]:
     """Submissions per day for a given lab."""
-    # 1. Находим лабораторную работу
-    lab_title = lab.replace("-", " ").replace("lab", "Lab")
+    lab_num = lab.split('-')[-1]
+    lab_title_pattern = f"Lab {lab_num}"
     
     statement = select(ItemRecord).where(
         ItemRecord.type == "lab",
-        ItemRecord.title.contains(lab_title)
+        ItemRecord.title.contains(lab_title_pattern)
     )
     result = await session.execute(statement)
     lab_item = result.scalar_one_or_none()
     
     if not lab_item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Lab {lab} not found"
-        )
+        return []
     
-    # 2. Находим все задания этой лабораторной
     statement = select(ItemRecord.id).where(
         ItemRecord.type == "task",
         ItemRecord.parent_id == lab_item.id
@@ -184,29 +172,37 @@ async def get_timeline(
     if not task_ids:
         return []
     
-    # 3. Группируем по дате
+    # Используем func.date для группировки по дате
     statement = select(
-        func.cast(InteractionLog.created_at, Date).label("date"),
+        func.date(InteractionLog.created_at).label("date"),
         func.count().label("submissions")
     ).where(
         InteractionLog.item_id.in_(task_ids)
     ).group_by(
-        func.cast(InteractionLog.created_at, Date)
+        func.date(InteractionLog.created_at)
     ).order_by(
-        "date"
+        func.date(InteractionLog.created_at)
     )
     
     result = await session.execute(statement)
     rows = result.all()
     
-    # 4. Форматируем результат
-    return [
-        {
-            "date": row.date.isoformat(),
+    # Преобразуем дату в строку, проверяя тип
+    formatted_result = []
+    for row in rows:
+        date_value = row.date
+        # Если это строка, используем как есть, если datetime - конвертируем
+        if isinstance(date_value, str):
+            date_str = date_value
+        else:
+            date_str = date_value.isoformat() if hasattr(date_value, 'isoformat') else str(date_value)
+        
+        formatted_result.append({
+            "date": date_str,
             "submissions": row.submissions
-        }
-        for row in rows
-    ]
+        })
+    
+    return formatted_result
 
 
 @router.get("/groups")
@@ -215,23 +211,19 @@ async def get_groups(
     session: AsyncSession = Depends(get_session),
 ) -> List[Dict[str, Any]]:
     """Per-group performance for a given lab."""
-    # 1. Находим лабораторную работу
-    lab_title = lab.replace("-", " ").replace("lab", "Lab")
+    lab_num = lab.split('-')[-1]
+    lab_title_pattern = f"Lab {lab_num}"
     
     statement = select(ItemRecord).where(
         ItemRecord.type == "lab",
-        ItemRecord.title.contains(lab_title)
+        ItemRecord.title.contains(lab_title_pattern)
     )
     result = await session.execute(statement)
     lab_item = result.scalar_one_or_none()
     
     if not lab_item:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Lab {lab} not found"
-        )
+        return []
     
-    # 2. Находим все задания этой лабораторной
     statement = select(ItemRecord.id).where(
         ItemRecord.type == "task",
         ItemRecord.parent_id == lab_item.id
@@ -242,16 +234,16 @@ async def get_groups(
     if not task_ids:
         return []
     
-    # 3. Группируем по группам студентов
     statement = select(
         Learner.student_group.label("group"),
-        func.round(func.avg(InteractionLog.score), 1).label("avg_score"),
+        func.coalesce(func.round(func.avg(InteractionLog.score), 1), 0.0).label("avg_score"),
         func.count(func.distinct(Learner.id)).label("students")
     ).join(
         InteractionLog, InteractionLog.learner_id == Learner.id
     ).where(
         InteractionLog.item_id.in_(task_ids),
-        Learner.student_group.isnot(None)  # Только студенты с указанной группой
+        Learner.student_group.isnot(None),
+        InteractionLog.score.isnot(None)
     ).group_by(
         Learner.student_group
     ).order_by(
@@ -261,11 +253,10 @@ async def get_groups(
     result = await session.execute(statement)
     rows = result.all()
     
-    # 4. Форматируем результат
     return [
         {
             "group": row.group,
-            "avg_score": float(row.avg_score) if row.avg_score else 0.0,
+            "avg_score": float(row.avg_score),
             "students": row.students
         }
         for row in rows
